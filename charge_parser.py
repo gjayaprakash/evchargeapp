@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Command line utility that converts FordPass charge-detail screenshots into CSV rows.
+Command line utility that converts EV charge-detail screenshots into CSV rows.
 
 The tool shells out to the `tesseract` binary (must be installed separately) to OCR the
-image, then uses a handful of heuristics to pull the pieces of data we care about.
+image, then hands the text to a plugin responsible for parsing the chosen charging app.
+If the app cannot be determined automatically, the user is prompted to pick the plugin.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 DATE_PATTERN = re.compile(
     r"(January|February|March|April|May|June|July|August|September|October|November|December)"
@@ -54,6 +55,21 @@ SECTION_BREAKS = [
     "energy added",
     "additional details",
 ]
+
+
+class ChargingAppPlugin:
+    """Interface for charging app OCR parsers."""
+
+    name: str = "base"
+    display_name: str = "Base Plugin"
+
+    def detect(self, text: str) -> float:
+        """Return a confidence score based on the OCR text."""
+        raise NotImplementedError
+
+    def parse(self, text: str) -> Dict[str, str]:
+        """Extract a CSV row from OCR text."""
+        raise NotImplementedError
 
 
 def lower_is_section_break(lowered: str) -> bool:
@@ -223,7 +239,7 @@ def extract_brand(charger_name: str) -> str:
     return ""
 
 
-def extract_record_from_text(text: str) -> Dict[str, str]:
+def _extract_fordpass_record_from_text(text: str) -> Dict[str, str]:
     """Parse OCR text into the CSV-ready dictionary."""
     lines = [line.strip() for line in text.splitlines()]
 
@@ -351,6 +367,99 @@ def load_existing_rows(output_path: Path) -> List[Dict[str, str]]:
         return existing
 
 
+class FordPassPlugin(ChargingAppPlugin):
+    name = "fordpass"
+    display_name = "FordPass"
+
+    def detect(self, text: str) -> float:
+        lowered = text.lower()
+        score = 0.0
+        if "fordpass" in lowered or "ford pass" in lowered:
+            score += 2.0
+        for token in ("charge details", "additional details", "energy added", "time charging"):
+            if token in lowered:
+                score += 0.5
+        if "summary" in lowered:
+            score += 0.25
+        return score
+
+    def parse(self, text: str) -> Dict[str, str]:
+        return _extract_fordpass_record_from_text(text)
+
+
+def extract_record_from_text(text: str) -> Dict[str, str]:
+    """
+    Backwards-compatible helper that parses OCR text using the FordPass plugin.
+
+    Other charging apps can be supported by registering additional plugins and
+    routing through the plugin selection helpers in `main`.
+    """
+    return FordPassPlugin().parse(text)
+
+
+def available_plugins() -> List[ChargingAppPlugin]:
+    """Return all known charging app plugins."""
+    return [FordPassPlugin()]
+
+
+def score_plugins(text: str, plugins: Sequence[ChargingAppPlugin]) -> List[Tuple[float, ChargingAppPlugin]]:
+    scores: List[Tuple[float, ChargingAppPlugin]] = []
+    for plugin in plugins:
+        scores.append((plugin.detect(text), plugin))
+    scores.sort(key=lambda pair: pair[0], reverse=True)
+    return scores
+
+
+def get_plugin_by_name(name: str, plugins: Sequence[ChargingAppPlugin]) -> Optional[ChargingAppPlugin]:
+    lowered = name.lower()
+    for plugin in plugins:
+        if lowered in {plugin.name.lower(), plugin.display_name.lower()}:
+            return plugin
+    return None
+
+
+def pick_plugin_from_scores(scores: Sequence[Tuple[float, ChargingAppPlugin]]) -> Optional[ChargingAppPlugin]:
+    if not scores:
+        return None
+    top_score, top_plugin = scores[0]
+    if top_score <= 0:
+        return None
+    if len(scores) == 1:
+        return top_plugin
+    next_score = scores[1][0]
+    if top_score > next_score:
+        return top_plugin
+    # Ambiguous if the best score ties with another plugin.
+    tied = [plugin for score, plugin in scores if score == top_score]
+    return top_plugin if len(tied) == 1 else None
+
+
+def prompt_user_for_plugin(plugins: Sequence[ChargingAppPlugin], image_path: Path) -> ChargingAppPlugin:
+    print(f"Could not determine the charging app for {image_path}.")
+    for idx, plugin in enumerate(plugins, start=1):
+        print(f"{idx}. {plugin.display_name}")
+    while True:
+        response = input("Select the correct app by number: ").strip()
+        try:
+            choice = int(response)
+        except ValueError:
+            print("Please enter a numeric choice from the list.")
+            continue
+        if 1 <= choice <= len(plugins):
+            return plugins[choice - 1]
+        print("Choice out of range; try again.")
+
+
+def resolve_plugin_for_text(
+    text: str, plugins: Sequence[ChargingAppPlugin], image_path: Path
+) -> ChargingAppPlugin:
+    scores = score_plugins(text, plugins)
+    plugin = pick_plugin_from_scores(scores)
+    if plugin:
+        return plugin
+    return prompt_user_for_plugin(plugins, image_path)
+
+
 def _parse_row_datetime(date_str: str, time_str: str) -> Optional[datetime]:
     if not date_str:
         return None
@@ -418,7 +527,7 @@ def write_csv(output_path: Path, rows: Iterable[Dict[str, str]], append: bool) -
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Extract FordPass charge details from screenshots and output CSV rows."
+        description="Extract EV charge details from charging app screenshots and output CSV rows."
     )
     parser.add_argument(
         "inputs",
@@ -448,6 +557,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print the OCR text for debugging instead of writing CSV.",
     )
+    parser.add_argument(
+        "--plugin",
+        dest="plugin_name",
+        help="Force a specific plugin by name (e.g. 'fordpass') instead of auto-detecting.",
+    )
     return parser.parse_args()
 
 
@@ -457,12 +571,20 @@ def main() -> None:
     image_paths = gather_image_paths(args.inputs)
     if not image_paths and not args.text_only:
         raise SystemExit("No images found in the provided paths.")
+    plugins = available_plugins()
+    forced_plugin: Optional[ChargingAppPlugin] = None
+    if args.plugin_name:
+        forced_plugin = get_plugin_by_name(args.plugin_name, plugins)
+        if forced_plugin is None:
+            available = ", ".join(plugin.name for plugin in plugins)
+            raise SystemExit(f"Unknown plugin '{args.plugin_name}'. Available plugins: {available}")
     for image in image_paths:
         text = run_tesseract(image, args.psm)
         if args.text_only:
             print(f"--- OCR output for {image} ---\n{text}")
             continue
-        rows.append(extract_record_from_text(text))
+        plugin = forced_plugin or resolve_plugin_for_text(text, plugins, image)
+        rows.append(plugin.parse(text))
 
     if args.text_only:
         return

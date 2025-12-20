@@ -8,7 +8,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from charge_parser import extract_record_from_text, gather_image_paths, write_csv
+from charge_parser import (
+    FordPassPlugin,
+    available_plugins,
+    extract_record_from_text,
+    gather_image_paths,
+    pick_plugin_from_scores,
+    score_plugins,
+    write_csv,
+)
 
 
 SAMPLE_TEXT = """
@@ -212,6 +220,20 @@ class CsvWriteTestCase(unittest.TestCase):
                 [row["charger_location"] for row in rows],
                 ["Location A", "Location B", "Location A"],
             )
+
+
+class PluginDetectionTestCase(unittest.TestCase):
+    def test_detects_fordpass_plugin(self) -> None:
+        plugins = available_plugins()
+        scores = score_plugins(SAMPLE_TEXT, plugins)
+        plugin = pick_plugin_from_scores(scores)
+        self.assertIsInstance(plugin, FordPassPlugin)
+
+    def test_detection_returns_none_for_unknown_app(self) -> None:
+        plugins = available_plugins()
+        scores = score_plugins("unknown text without markers", plugins)
+        plugin = pick_plugin_from_scores(scores)
+        self.assertIsNone(plugin)
 
 
 if __name__ == "__main__":
