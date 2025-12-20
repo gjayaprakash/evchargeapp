@@ -1,4 +1,4 @@
-# FordPass Charge Parser
+# EV Charge Tracker
 
 Simple CLI that converts FordPass charge-detail screenshots into CSV entries by
 running the images through Tesseract OCR and parsing the resulting text.
@@ -39,3 +39,6 @@ source .venv/bin/activate
 pip install -r requirements.txt  # empty placeholder, stdlib only
 python -m unittest discover -s tests
 ```
+## Future work
+
+Add support for screenshots from other charging apps
