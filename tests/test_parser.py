@@ -116,7 +116,6 @@ class ParserTestCase(unittest.TestCase):
         record = extract_record_from_text(SAMPLE_TEXT)
         self.assertEqual(record["charger_name"], "Shell Recharge - Southland Mall - Macy's")
         self.assertEqual(record["charger_location"], "One Southland Mall Drive Hayward")
-        self.assertEqual(record["duration"], "2 hrs 50 min")
         self.assertEqual(record["duration_minutes"], "170")
         self.assertEqual(record["kwh_added"], "16.7")
         self.assertEqual(record["start_time"], "12:32")
@@ -182,7 +181,6 @@ class CsvWriteTestCase(unittest.TestCase):
                 "date": "2025-12-16",
                 "charger_name": "Shell Recharge",
                 "charger_location": "Location A",
-                "duration": "2 hrs",
                 "duration_minutes": "120",
                 "kwh_added": "10",
                 "charger_kw_rating": "",

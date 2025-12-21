@@ -31,7 +31,6 @@ CSV_COLUMNS = [
     "date",
     "charger_name",
     "charger_location",
-    "duration",
     "duration_minutes",
     "kwh_added",
     "charger_kw_rating",

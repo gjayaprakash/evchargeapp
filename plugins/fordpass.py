@@ -257,7 +257,6 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
         "date": date_value,
         "charger_name": charger_name,
         "charger_location": charger_location,
-        "duration": duration,
         "duration_minutes": duration_minutes,
         "kwh_added": kwh_added,
         "charger_kw_rating": charger_kw,
