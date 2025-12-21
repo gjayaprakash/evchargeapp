@@ -22,7 +22,7 @@ python charge_parser.py /path/to/folder /path/to/another/screenshot.png -o charg
   `(date, location, start_time)` and the file is re-sorted chronologically.
 - Override the Tesseract page-segmentation mode with `--psm` if needed. Some screenshot
   layouts (tall, multi-column, or heavy with white space) OCR better with alternate modes;
-  try `--psm 6` (default), `--psm 4`, `--psm 11`, `--psm 12`, or `--psm 13` if text looks jumbled.
+  try `--psm 6` (default), `--psm 4`, `--psm 11`, `--psm 12`, or `--psm 13` if longer screenshots fail to parse.
 
 The generated CSV contains the following snake_case columns:
 
