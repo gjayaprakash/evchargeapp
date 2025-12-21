@@ -176,6 +176,22 @@ def extract_brand(charger_name: str) -> str:
     return ""
 
 
+def parse_duration_minutes(duration_text: str) -> str:
+    """Convert duration text like '2 hrs 50 min' into total minutes."""
+    if not duration_text:
+        return ""
+    hours = 0
+    minutes = 0
+    hour_match = re.search(r"(\d+)\s*hr", duration_text, flags=re.IGNORECASE)
+    if hour_match:
+        hours = int(hour_match.group(1))
+    minute_match = re.search(r"(\d+)\s*min", duration_text, flags=re.IGNORECASE)
+    if minute_match:
+        minutes = int(minute_match.group(1))
+    total = hours * 60 + minutes
+    return str(total) if total > 0 else ""
+
+
 def extract_record_from_text(text: str) -> Dict[str, str]:
     """Parse OCR text into the CSV-ready dictionary."""
     lines = [line.strip() for line in text.splitlines()]
@@ -210,6 +226,7 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
             charger_name, charger_location = extract_summary_info(details_idx + 1)
 
     duration = extract_label_value(lines, "time charging")
+    duration_minutes = parse_duration_minutes(duration)
     kwh_text = extract_label_value(lines, "energy added")
     kwh_match = KWH_PATTERN.search(kwh_text)
     kwh_added = kwh_match.group(1) if kwh_match else ""
@@ -241,6 +258,7 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
         "charger_name": charger_name,
         "charger_location": charger_location,
         "duration": duration,
+        "duration_minutes": duration_minutes,
         "kwh_added": kwh_added,
         "charger_kw_rating": charger_kw,
         "charge_percentage": charge_pct,

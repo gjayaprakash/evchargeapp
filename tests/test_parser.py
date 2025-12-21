@@ -117,6 +117,7 @@ class ParserTestCase(unittest.TestCase):
         self.assertEqual(record["charger_name"], "Shell Recharge - Southland Mall - Macy's")
         self.assertEqual(record["charger_location"], "One Southland Mall Drive Hayward")
         self.assertEqual(record["duration"], "2 hrs 50 min")
+        self.assertEqual(record["duration_minutes"], "170")
         self.assertEqual(record["kwh_added"], "16.7")
         self.assertEqual(record["start_time"], "12:32")
         self.assertEqual(record["end_time"], "15:23")
@@ -136,6 +137,7 @@ class ParserTestCase(unittest.TestCase):
         self.assertEqual(record["start_percentage"], "46")
         self.assertEqual(record["end_percentage"], "66")
         self.assertEqual(record["date"], "2025-12-07")
+        self.assertEqual(record["duration_minutes"], "167")
 
     def test_extract_record_with_ordinal_date(self) -> None:
         record = extract_record_from_text(IST_TEXT)
@@ -181,6 +183,7 @@ class CsvWriteTestCase(unittest.TestCase):
                 "charger_name": "Shell Recharge",
                 "charger_location": "Location A",
                 "duration": "2 hrs",
+                "duration_minutes": "120",
                 "kwh_added": "10",
                 "charger_kw_rating": "",
                 "start_time": "12:00",
@@ -200,6 +203,7 @@ class CsvWriteTestCase(unittest.TestCase):
                     "date": "2026-01-01",
                     "start_time": "09:00",
                     "charger_location": "Location B",
+                    "duration_minutes": "180",
                 }
             )
 
@@ -207,7 +211,7 @@ class CsvWriteTestCase(unittest.TestCase):
             self.assertEqual(added, 1)
 
             blank_date = dict(initial_row)
-            blank_date.update({"date": "", "start_time": ""})
+            blank_date.update({"date": "", "start_time": "", "duration_minutes": ""})
             added = write_csv(output_path, [blank_date], append=True)
             self.assertEqual(added, 1)
 

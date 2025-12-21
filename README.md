@@ -29,7 +29,7 @@ The generated CSV contains the following snake_case columns:
 ```
 date,charger_name,charger_location,duration,kwh_added,
 charger_kw_rating,charge_percentage,charge_miles,start_time,end_time,start_percentage,
-end_percentage,cost,charger_brand
+end_percentage,cost,charger_brand,duration_minutes
 ```
 
 Rows that are missing a given value leave the corresponding cell blank.
