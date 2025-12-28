@@ -3,6 +3,8 @@
 Simple CLI that converts FordPass charge-detail screenshots into CSV entries by
 running the images through Tesseract OCR and parsing the resulting text.
 
+Generated with vscode + OpenAI codex
+
 ## Requirements
 
 - Python 3.9+
