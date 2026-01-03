@@ -13,7 +13,6 @@ DATE_PATTERN = re.compile(
 )
 TIME_PATTERN = re.compile(r"\b\d{1,2}:\d{2}\b")
 PERCENT_PATTERN = re.compile(r"(\d{1,3})\s*%")
-KW_PATTERN = re.compile(r"\b(\d+(?:\.\d+)?)\s*kW\b(?!h)", re.IGNORECASE)
 KWH_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*kWh\b", re.IGNORECASE)
 COST_PATTERN = re.compile(r"\$[\d,.]+")
 
@@ -25,6 +24,46 @@ SECTION_BREAKS = [
     "energy added",
     "additional details",
 ]
+
+COMMON_STREET_SUFFIXES = (
+    "st",
+    "street",
+    "ave",
+    "avenue",
+    "rd",
+    "road",
+    "blvd",
+    "boulevard",
+    "dr",
+    "drive",
+    "ln",
+    "lane",
+    "way",
+    "ct",
+    "court",
+    "cir",
+    "circle",
+    "pl",
+    "place",
+    "parkway",
+    "pkwy",
+    "mall",
+)
+
+SPELLED_OUT_NUMBERS = (
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+)
 
 
 def lower_is_section_break(lowered: str) -> bool:
@@ -80,6 +119,46 @@ def find_time(lines: List[str], start_idx: int) -> str:
         if match:
             return match.group(0)
     return ""
+
+
+def looks_like_address(text: str) -> bool:
+    """Heuristic check for address-like lines."""
+    lowered = text.lower()
+    has_street_suffix = any(f" {suffix}" in lowered for suffix in COMMON_STREET_SUFFIXES)
+    starts_with_number = bool(re.match(r"\s*\d{1,5}\b", lowered))
+    starts_with_word_number = bool(re.match(rf"\s*({'|'.join(SPELLED_OUT_NUMBERS)})\b", lowered))
+    if has_street_suffix and (starts_with_number or starts_with_word_number):
+        return True
+    if has_street_suffix and starts_with_number is False and starts_with_word_number is False:
+        # Allow non-numeric addresses like "One Southland Mall Drive Hayward"
+        return True
+    return False
+
+
+def extract_section(lines: List[str], label: str) -> List[str]:
+    """Return lines that belong to a section header until the next section break."""
+    target = label.lower()
+    for idx, line in enumerate(lines):
+        clean = line.strip()
+        if not clean:
+            continue
+        lowered = clean.lower()
+        if lowered == target or lowered.startswith(f"{target} "):
+            section: List[str] = []
+            if lowered.startswith(f"{target} "):
+                inline = clean[len(label) :].strip().lstrip(":").strip()
+                if inline:
+                    section.append(inline)
+            for follower in lines[idx + 1 :]:
+                follower_clean = follower.strip()
+                if not follower_clean:
+                    continue
+                follower_lower = follower_clean.lower()
+                if lower_is_section_break(follower_lower):
+                    break
+                section.append(follower_clean)
+            return section
+    return []
 
 
 def parse_date_to_iso(date_text: str) -> str:
@@ -195,10 +274,10 @@ def parse_duration_minutes(duration_text: str) -> str:
 def extract_record_from_text(text: str) -> Dict[str, str]:
     """Parse OCR text into the CSV-ready dictionary."""
     lines = [line.strip() for line in text.splitlines()]
+    additional_idx = next((idx for idx, line in enumerate(lines) if "additional details" in line.lower()), None)
 
     def extract_summary_info(start_idx: int) -> tuple[str, str]:
-        name = ""
-        location = ""
+        summary_lines: List[str] = []
         for candidate in lines[start_idx:]:
             clean = candidate.strip()
             if not clean:
@@ -208,11 +287,28 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
                 if lowered in {"summary", "charge details"}:
                     continue
                 break
-            if not name:
-                name = clean
-            elif not location:
-                location = clean
-                break
+            summary_lines.append(clean)
+
+        if not summary_lines:
+            return "", ""
+
+        address_idx = next((idx for idx, value in enumerate(summary_lines) if looks_like_address(value)), None)
+
+        if address_idx is None:
+            name_parts = summary_lines[:1]
+            location_value = summary_lines[1] if len(summary_lines) > 1 else ""
+        else:
+            name_parts = summary_lines[:address_idx]
+            location_value = summary_lines[address_idx]
+
+        name = " ".join(part for part in name_parts if part).strip()
+        location = location_value.strip()
+
+        if not name and summary_lines:
+            name = summary_lines[0].strip()
+            if location == name and len(summary_lines) > 1:
+                location = summary_lines[1].strip()
+
         return name, location
 
     summary_idx = next((i for i, l in enumerate(lines) if "summary" in l.lower()), None)
@@ -232,6 +328,10 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
     kwh_added = kwh_match.group(1) if kwh_match else ""
 
     charge_text = extract_label_value(lines, "charge")
+    if not charge_text:
+        charge_section = extract_section(lines, "charge")
+        if charge_section:
+            charge_text = charge_section[0]
     charge_pct = ""
     charge_miles = ""
     if charge_text:
@@ -241,9 +341,19 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
         miles_match = re.search(r"\((?:\+)?(\d+)\s*mi\)", charge_text)
         if miles_match:
             charge_miles = miles_match.group(1)
-
-    kw_match = KW_PATTERN.search(text)
-    charger_kw = kw_match.group(1) if kw_match else ""
+    if not charge_pct or not charge_miles:
+        scan_limit = additional_idx if additional_idx is not None else len(lines)
+        for line in lines[:scan_limit]:
+            if not charge_pct:
+                pct_match = PERCENT_PATTERN.search(line)
+                if pct_match:
+                    charge_pct = pct_match.group(1)
+            if not charge_miles:
+                miles_match = re.search(r"\((?:\+)?(\d+)\s*mi\)", line)
+                if miles_match:
+                    charge_miles = miles_match.group(1)
+            if charge_pct and charge_miles:
+                break
 
     cost_match = COST_PATTERN.search(text)
     cost_value = cost_match.group(0) if cost_match else ""
@@ -259,7 +369,6 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
         "charger_location": charger_location,
         "duration_minutes": duration_minutes,
         "kwh_added": kwh_added,
-        "charger_kw_rating": charger_kw,
         "charge_percentage": charge_pct,
         "charge_miles": charge_miles,
         "start_time": start_time,

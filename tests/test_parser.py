@@ -110,6 +110,49 @@ December 10, 2025 09:00
 End 70%
 """
 
+NO_CHARGE_LABEL_TEXT = """
+Charge details
+
+Summary
+Fallback Charger
+100 Main St
+
+69% (+180 mi)
+
+Time charging
+30 min
+
+Additional details
+December 23, 2025
+Start 12:00 10%
+December 23, 2025
+End 12:30 20%
+"""
+
+MULTILINE_NAME_TEXT = """
+Charge details
+
+Summary
+EVgo - Bridgepointe Shopping Center -
+Chick-fil-A
+3010 Bridgepointe Parkway San Mateo
+
+Charge
+69% (+180 mi)
+
+Time charging
+37 min
+
+Energy added
+50 kWh
+
+Additional details
+December 23, 2025
+Start 18:02 14%
+December 23, 2025
+End 18:39 83%
+"""
+
 
 class ParserTestCase(unittest.TestCase):
     def test_extract_record_from_text(self) -> None:
@@ -153,6 +196,26 @@ class ParserTestCase(unittest.TestCase):
         self.assertEqual(record["start_time"], "07:00")
         self.assertEqual(record["end_time"], "09:00")
 
+    def test_extract_record_with_multiline_name(self) -> None:
+        record = extract_record_from_text(MULTILINE_NAME_TEXT)
+        self.assertEqual(record["charger_name"], "EVgo - Bridgepointe Shopping Center - Chick-fil-A")
+        self.assertEqual(record["charger_location"], "3010 Bridgepointe Parkway San Mateo")
+        self.assertEqual(record["date"], "2025-12-23")
+        self.assertEqual(record["start_time"], "18:02")
+        self.assertEqual(record["end_time"], "18:39")
+        self.assertEqual(record["start_percentage"], "14")
+        self.assertEqual(record["end_percentage"], "83")
+        self.assertEqual(record["charge_percentage"], "69")
+        self.assertEqual(record["charge_miles"], "180")
+        self.assertEqual(record["kwh_added"], "50")
+        self.assertEqual(record["duration_minutes"], "37")
+        self.assertEqual(record["charger_brand"], "EVgo")
+
+    def test_extract_record_with_missing_charge_label(self) -> None:
+        record = extract_record_from_text(NO_CHARGE_LABEL_TEXT)
+        self.assertEqual(record["charge_percentage"], "69")
+        self.assertEqual(record["charge_miles"], "180")
+
 
 class GatherImagesTestCase(unittest.TestCase):
     def test_collects_images_from_directory(self) -> None:
@@ -183,7 +246,6 @@ class CsvWriteTestCase(unittest.TestCase):
                 "charger_location": "Location A",
                 "duration_minutes": "120",
                 "kwh_added": "10",
-                "charger_kw_rating": "",
                 "start_time": "12:00",
                 "end_time": "14:00",
                 "start_percentage": "20",
