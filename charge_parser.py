@@ -12,9 +12,16 @@ from __future__ import annotations
 import argparse
 import csv
 import subprocess
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
+
+try:
+    import easyocr
+    EASYOCR_AVAILABLE = True
+except ImportError:
+    EASYOCR_AVAILABLE = False
 
 from plugins import (
     ChargingAppPlugin,
@@ -39,15 +46,50 @@ CSV_COLUMNS = [
     "end_time",
     "start_percentage",
     "end_percentage",
-    "cost",
     "charger_brand",
+    "cost",
 ]
+
+# Global EasyOCR reader instance (initialized on first use)
+_easyocr_reader = None
+
+
+def get_easyocr_reader():
+    """Lazy initialization of EasyOCR reader."""
+    global _easyocr_reader
+    if _easyocr_reader is None and EASYOCR_AVAILABLE:
+        # Try to use GPU on macOS (MPS) if available, suppress pin_memory warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*pin_memory.*")
+            # EasyOCR will automatically detect and use MPS on Apple Silicon
+            _easyocr_reader = easyocr.Reader(['en'], gpu=True, verbose=False)
+    return _easyocr_reader
+
+
+def run_easyocr(image_path: Path) -> str:
+    """Run EasyOCR on the image and return the extracted text."""
+    reader = get_easyocr_reader()
+    if reader is None:
+        raise RuntimeError("EasyOCR not available")
+
+    # Suppress pin_memory warnings on MPS (macOS)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*pin_memory.*")
+        result = reader.readtext(str(image_path), detail=0)
+    return "\n".join(result)
+
 
 def run_tesseract(image_path: Path, psm: str) -> str:
     """Run tesseract on the image and return the extracted text."""
     try:
         result = subprocess.run(
-            ["tesseract", str(image_path), "stdout", "--psm", psm],
+            [
+                "tesseract",
+                str(image_path),
+                "stdout",
+                "--psm", psm,
+                "--oem", "1",  # Use LSTM engine only (better for modern screenshots)
+            ],
             check=True,
             capture_output=True,
             text=True,
@@ -59,6 +101,23 @@ def run_tesseract(image_path: Path, psm: str) -> str:
     except subprocess.CalledProcessError as exc:  # pragma: no cover - depends on OCR input
         raise RuntimeError(f"OCR failed for {image_path}: {exc.stderr}") from exc
     return result.stdout
+
+
+def run_ocr(image_path: Path, psm: str, use_easyocr: bool = True) -> str:
+    """
+    Run OCR on the image using EasyOCR if available, otherwise fall back to Tesseract.
+
+    Args:
+        image_path: Path to the image file
+        psm: Tesseract page segmentation mode (ignored if using EasyOCR)
+        use_easyocr: If True and EasyOCR is available, use it instead of Tesseract
+
+    Returns:
+        Extracted text from the image
+    """
+    if use_easyocr and EASYOCR_AVAILABLE:
+        return run_easyocr(image_path)
+    return run_tesseract(image_path, psm)
 
 
 def gather_image_paths(paths: Iterable[Path]) -> List[Path]:
@@ -270,9 +329,10 @@ def main() -> None:
             available = ", ".join(plugin.name for plugin in plugins)
             raise SystemExit(f"Unknown plugin '{args.plugin_name}'. Available plugins: {available}")
     for image in image_paths:
-        text = run_tesseract(image, args.psm)
+        text = run_ocr(image, args.psm)
         if args.text_only:
-            print(f"--- OCR output for {image} ---\n{text}")
+            ocr_engine = "EasyOCR" if EASYOCR_AVAILABLE else "Tesseract"
+            print(f"--- OCR output for {image} (using {ocr_engine}) ---\n{text}")
             continue
         plugin = forced_plugin or resolve_plugin_for_text(text, plugins, image)
         rows.append(plugin.parse(text))

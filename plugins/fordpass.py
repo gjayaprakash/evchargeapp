@@ -11,7 +11,7 @@ DATE_PATTERN = re.compile(
     r"\s+((?:\d{1,2})(?:st|nd|rd|th)?|[iI]st)(?:,\s*|\s+)(\d{4})",
     re.IGNORECASE,
 )
-TIME_PATTERN = re.compile(r"\b\d{1,2}:\d{2}\b")
+TIME_PATTERN = re.compile(r"\b\d{1,2}[:.]\d{2}\b")
 PERCENT_PATTERN = re.compile(r"(\d{1,3})\s*%")
 KWH_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*kWh\b", re.IGNORECASE)
 COST_PATTERN = re.compile(r"\$[\d,.]+")
@@ -25,45 +25,6 @@ SECTION_BREAKS = [
     "additional details",
 ]
 
-COMMON_STREET_SUFFIXES = (
-    "st",
-    "street",
-    "ave",
-    "avenue",
-    "rd",
-    "road",
-    "blvd",
-    "boulevard",
-    "dr",
-    "drive",
-    "ln",
-    "lane",
-    "way",
-    "ct",
-    "court",
-    "cir",
-    "circle",
-    "pl",
-    "place",
-    "parkway",
-    "pkwy",
-    "mall",
-)
-
-SPELLED_OUT_NUMBERS = (
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-)
 
 
 def lower_is_section_break(lowered: str) -> bool:
@@ -117,22 +78,10 @@ def find_time(lines: List[str], start_idx: int) -> str:
     for follower in lines[start_idx:]:
         match = TIME_PATTERN.search(follower)
         if match:
-            return match.group(0)
+            time_str = match.group(0)
+            # Normalize periods to colons for consistent output
+            return time_str.replace(".", ":")
     return ""
-
-
-def looks_like_address(text: str) -> bool:
-    """Heuristic check for address-like lines."""
-    lowered = text.lower()
-    has_street_suffix = any(f" {suffix}" in lowered for suffix in COMMON_STREET_SUFFIXES)
-    starts_with_number = bool(re.match(r"\s*\d{1,5}\b", lowered))
-    starts_with_word_number = bool(re.match(rf"\s*({'|'.join(SPELLED_OUT_NUMBERS)})\b", lowered))
-    if has_street_suffix and (starts_with_number or starts_with_word_number):
-        return True
-    if has_street_suffix and starts_with_number is False and starts_with_word_number is False:
-        # Allow non-numeric addresses like "One Southland Mall Drive Hayward"
-        return True
-    return False
 
 
 def extract_section(lines: List[str], label: str) -> List[str]:
@@ -220,8 +169,20 @@ def extract_additional_details(lines: List[str]) -> Dict[str, str]:
         if date_match:
             current_date = parse_date_to_iso(date_match.group(0))
             time_match = TIME_PATTERN.search(line)
-            pending_time = time_match.group(0) if time_match else ""
+            if time_match:
+                # Normalize periods to colons for consistent output
+                pending_time = time_match.group(0).replace(".", ":")
+            else:
+                pending_time = ""
             continue
+
+        # Check if line is a standalone time (EasyOCR often splits date and time)
+        time_match = TIME_PATTERN.search(line)
+        if time_match and time_match.group(0).strip() == line.strip():
+            # This line contains only a time, save it as pending
+            pending_time = time_match.group(0).replace(".", ":")
+            continue
+
         lowered = line.lower()
         if lowered.startswith("start"):
             if not result["start_date"]:
@@ -292,22 +253,17 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
         if not summary_lines:
             return "", ""
 
-        address_idx = next((idx for idx, value in enumerate(summary_lines) if looks_like_address(value)), None)
-
-        if address_idx is None:
-            name_parts = summary_lines[:1]
-            location_value = summary_lines[1] if len(summary_lines) > 1 else ""
-        else:
-            name_parts = summary_lines[:address_idx]
-            location_value = summary_lines[address_idx]
-
-        name = " ".join(part for part in name_parts if part).strip()
-        location = location_value.strip()
-
-        if not name and summary_lines:
+        # Use the last line as the address, everything before as the name
+        if len(summary_lines) >= 2:
+            location = summary_lines[-1].strip()
+            name = " ".join(summary_lines[:-1]).strip()
+        elif len(summary_lines) == 1:
+            # Only one line - treat it as the name
             name = summary_lines[0].strip()
-            if location == name and len(summary_lines) > 1:
-                location = summary_lines[1].strip()
+            location = ""
+        else:
+            name = ""
+            location = ""
 
         return name, location
 
@@ -363,6 +319,28 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
     start_time = additional["start_time"]
     end_time = additional["end_time"]
 
+    # Fix OCR errors in percentages where leading digits may be misread
+    start_pct = additional["start_pct"]
+    end_pct = additional["end_pct"]
+
+    if start_pct and end_pct and charge_pct:
+        try:
+            start_val = int(start_pct)
+            end_val = int(end_pct)
+            charge_val = int(charge_pct)
+            expected_end = start_val + charge_val
+
+            # Check if OCR misread a leading digit (e.g., "79" as "19", "78" as "18")
+            if abs(expected_end - end_val) >= 10:
+                # Try common OCR errors: 1→7, 7→1, 1→4, etc.
+                for correction in [60, 70, 80, -60, -70, -80, 30, 40, 50, -30, -40, -50]:
+                    corrected_end = end_val + correction
+                    if corrected_end == expected_end and 0 <= corrected_end <= 100:
+                        end_pct = str(corrected_end)
+                        break
+        except (ValueError, TypeError):
+            pass
+
     record = {
         "date": date_value,
         "charger_name": charger_name,
@@ -373,8 +351,8 @@ def extract_record_from_text(text: str) -> Dict[str, str]:
         "charge_miles": charge_miles,
         "start_time": start_time,
         "end_time": end_time,
-        "start_percentage": additional["start_pct"],
-        "end_percentage": additional["end_pct"],
+        "start_percentage": start_pct,
+        "end_percentage": end_pct,
         "cost": cost_value,
         "charger_brand": extract_brand(charger_name),
     }
